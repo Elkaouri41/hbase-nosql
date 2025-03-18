@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Guide détaillé d'utilisation de l'API HBase avec Node.js et React</title>
+  <style>
+    body { font-family:Cambria, Cochin, Georgia, Times, 'Times New Roman', serif; margin: 40px; line-height: 1.6; }
+    h1, h2, h3 { color: #2c3e50; }
+    code { background: #ecf0f1; padding: 2px 5px; border-radius: 3px; }
+    pre { background: #f4f4f4; padding: 10px; border-radius: 5px; overflow-x: auto; }
+    .note { background: #ffffcc; padding: 10px; border-left: 5px solid #ffcc00; margin: 20px 0; }
+  </style>
+</head>
+<body>
+  <h1>Guide détaillé d'utilisation de l'API HBase avec Node.js et React</h1>
+  
+  <!-- Section 1 : Installation et démarrage de HBase avec Docker -->
+  <h2>1. Installation et démarrage de HBase avec Docker</h2>
+  <p>Exécutez les commandes suivantes pour télécharger et démarrer HBase dans un conteneur Docker :</p>
+  <pre><code># Télécharger l'image HBase
+docker pull harisekhon/hbase
+
+# Démarrer le conteneur HBase (remplacez CONTAINER_ID par l'ID de votre conteneur)
+docker start CONTAINER_ID
+
+# Vérifier que le conteneur est actif
+docker ps
+
+# Démarrer le service Thrift pour HBase sur le port 9091
+docker exec -it CONTAINER_ID hbase thrift start -p 9091
+  </code></pre>
+  <p>
+    Ces commandes permettent de lancer HBase dans Docker, d'exposer le service Thrift (pour les interactions via API REST) et de vérifier l'état du conteneur.
+  </p>
+  
+  <!-- Section 2 : Manipulation de données via le shell HBase -->
+  <h2>2. Manipulation de données dans HBase via le Shell</h2>
+  <h3>Insertion et mise à jour d'un utilisateur</h3>
+  <pre><code># Insertion d'un utilisateur dans la table 'users'
+echo -e "put 'users', '1', 'info:name', 'Alice'" | hbase shell
+
+# Ajout de l'email pour Alice
+echo -e "put 'users', '1', 'info:email', 'alice@example.com'" | hbase shell
+
+# Ajout de l'âge pour Alice
+echo -e "put 'users', '1', 'info:age', '25'" | hbase shell
+
+# Mise à jour de l'âge d'Alice
+echo -e "put 'users', '1', 'info:age', '26'" | hbase shell
+  </code></pre>
+  <p>
+    Chaque commande est envoyée directement au shell HBase grâce à l'utilisation de <code>echo -e</code> et du pipe (<code>|</code>). Le caractère <code>\n</code> permet de gérer plusieurs commandes.
+  </p>
+  
+  <h3>Insertion de plusieurs utilisateurs en une seule commande</h3>
+  <pre><code>echo -e "put 'users', '2', 'info:name', 'Bob'
+put 'users', '2', 'info:email', 'bob@example.com'
+put 'users', '2', 'info:age', '30'" | hbase shell
+  </code></pre>
+  <p>
+    Ici, plusieurs commandes <code>put</code> sont regroupées pour insérer les données de l'utilisateur Bob.
+  </p>
+  
+  <h3>Vérification des données</h3>
+  <pre><code># Scanner la table 'users'
+echo -e "scan 'users'" | hbase shell
+
+# Récupérer les informations de l'utilisateur '1'
+echo -e "get 'users', '1'" | hbase shell
+
+# Supprimer toutes les données de l'utilisateur '1'
+echo -e "deleteall 'users', '1'" | hbase shell
+  </code></pre>
+  
+  <!-- Section 3 : Création d'une API REST avec Node.js -->
+  <h2>3. Création d'une API REST avec Node.js</h2>
+  <p>
+    Ce serveur Node.js utilise Express pour exposer une API permettant d'interagir avec HBase via son API REST.
+  </p>
+  <pre><code>
+// Importer les modules nécessaires
+const express = require("express");
+const axios = require("axios");  // Pour communiquer avec l'API REST de HBase
+const cors = require("cors");
+
+const app = express();
+
+// Middleware pour autoriser les requêtes cross-origin et parser les JSON
+app.use(cors());
+app.use(express.json());
+
+/* 
+  Endpoint POST pour ajouter un utilisateur.
+  Les données reçues sont encodées en Base64 comme requis par HBase REST.
+*/
+app.post("/users", async (req, res) => {
+  try {
+    const { id, name, email, age } = req.body;
+    const data = {
+      Row: [
+        {
+          key: Buffer.from(id).toString("base64"),
+          Cell: [
+            {
+              column: Buffer.from("info:name").toString("base64"),
+              $: Buffer.from(name).toString("base64"),
+            },
+            {
+              column: Buffer.from("info:email").toString("base64"),
+              $: Buffer.from(email).toString("base64"),
+            },
+            {
+              column: Buffer.from("info:age").toString("base64"),
+              $: Buffer.from(age.toString()).toString("base64"),
+            },
+          ],
+        },
+      ],
+    };
+
+    // Envoi d'une requête PUT vers l'API REST de HBase pour créer ou mettre à jour l'utilisateur
+    await axios.put(`http://127.0.0.1:8080/users/${id}`, data, {
+      headers: { "Content-Type": "application/json" },
+    });
+
+    res.status(201).send(`Utilisateur ${id} ajouté.`);
+  } catch (err) {
+    console.error("Erreur lors de l'ajout de l'utilisateur :", err);
+    res.status(500).send(`Erreur : ${err.message}`);
+  }
+});
+
+/* 
+  Endpoint GET pour récupérer tous les utilisateurs.
+  Exemple d'utilisation d'un scanner HBase pour lire les données.
+*/
+app.get("/users", async (req, res) => {
+  try {
+    // Créer un scanner en envoyant une requête PUT
+    const scannerResponse = await axios.put(
+      "http://127.0.0.1:8080/users/scanner",
+      { batch: 10 },
+      { headers: { Accept: "application/json" } }
+    );
+    // Extraire l'ID du scanner depuis l'en-tête Location
+    const scannerId = scannerResponse.headers.location.split("/").pop();
+    // Lire les données du scanner
+    const dataResponse = await axios.get(`http://127.0.0.1:8080/users/scanner/${scannerId}`, {
+      headers: { Accept: "application/json" },
+    });
+    res.json(dataResponse.data);
+  } catch (err) {
+    console.error("Erreur lors de la récupération des utilisateurs :", err);
+    res.status(500).send(`Erreur : ${err.message}`);
+  }
+});
+
+// Démarrer le serveur Node.js sur le port 7070
+app.listen(7070, () => {
+  console.log("Serveur Node.js en cours d'exécution sur le port 7070.");
+});
+  </code></pre>
+  <p>
+    Ce code crée un serveur Express qui expose des endpoints pour ajouter (<code>POST /users</code>) et récupérer (<code>GET /users</code>) des utilisateurs en interagissant avec l'API REST de HBase. Chaque champ est encodé en Base64 conformément aux exigences de HBase.
+  </p>
+  
+  <!-- Section 4 : Création d'une interface utilisateur avec React -->
+  <h2>4. Création d'une interface utilisateur avec React</h2>
+  <p>
+    Voici un exemple d'application React qui consomme l'API REST exposée par le serveur Node.js.
+  </p>
+  <pre><code>import React, { useState, useEffect } from "react";
+import axios from "axios";
+import "./App.css";
+
+function App() {
+  // Déclaration de l'état pour stocker le message récupéré du backend
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    // Appel à l'endpoint '/message' pour récupérer un message du serveur
+    axios.get("http://localhost:7070/message")
+      .then(response => {
+        setMessage(response.data.message);
+      })
+      .catch(error => {
+        console.error("Erreur lors de la récupération du message :", error);
+      });
+  }, []); // Le tableau vide assure que l'appel se fait une seule fois au montage
+
+  return (
+    <div className="App">
+      <h1>{message}</h1>
+      {/* Vous pouvez ajouter ici un formulaire ou d'autres composants pour gérer les utilisateurs */}
+    </div>
+  );
+}
+
+export default App;
+  </code></pre>
+  <p>
+    Ce composant React utilise Axios pour récupérer des données depuis le backend et les afficher. Le hook <code>useEffect</code> garantit que l'appel à l'API ne se fait qu'une seule fois lors du montage du composant.
+  </p>
+  
+  <!-- Section 5 : Structure du projet -->
+  <h2>5. Structure du projet</h2>
+  <p>Voici un aperçu de l'organisation du projet :</p>
+  <pre><code>
+project-root/
+├── client/         # Application React (frontend)
+│   ├── public/
+│   ├── src/
+│   │   └── App.js  # Composant principal de l'interface
+│   └── package.json
+└── server/         # Serveur Node.js (backend)
+    ├── server.js   # Fichier principal du serveur Express
+    └── package.json
+  </code></pre>
+  
+  <!-- Section 6 : Démarrage et tests -->
+  <h2>6. Démarrage et tests</h2>
+  <p>
+    <strong>Démarrer le backend :</strong><br>
+    Dans le dossier <code>server</code>, lancez le serveur en mode développement avec :
+    <code>npm run dev</code>
+  </p>
+  <p>
+    <strong>Démarrer le frontend :</strong><br>
+    Dans le dossier <code>client</code>, démarrez l'application React avec :
+    <code>npm start</code>
+  </p>
+  <p>
+    Assurez-vous que le serveur backend fonctionne sur le port 7070 et que l'interface React est correctement configurée pour interagir avec ce serveur.
+  </p>
+  
+  <div class="note">
+    <p><strong>Note :</strong> En production, il est recommandé d'ajouter une gestion d'erreurs plus robuste, d'utiliser des variables d'environnement pour les configurations sensibles et de sécuriser les endpoints.</p>
+  </div>
+  
+  <p>
+    Ce guide détaillé offre une base complète pour démarrer avec HBase, Node.js et React. N'hésitez pas à l'adapter selon vos besoins et à consulter la documentation officielle pour approfondir chaque technologie.
+  </p>
+</body>
+</html>
